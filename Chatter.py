@@ -94,7 +94,14 @@ def save_settings_json(settings_dict, json_path):
         
         
 # === VC TAB (NEW) ===
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Select device: Apple Silicon GPU (MPS) if available, else fallback to CPU
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+elif torch.backends.mps.is_available():
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
+
 VC_MODEL = None
 
 def get_or_load_vc_model():
@@ -227,8 +234,23 @@ except LookupError:
     nltk.download('punkt_tab')
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Select device: Apple Silicon GPU (MPS) if available, else fallback to CPU
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+elif torch.backends.mps.is_available():
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
+
 print(f"🚀 Running on device: {DEVICE}")
+
+if torch.cuda.is_available():
+    WHISPERDEVICE = "cuda"
+else:
+    WHISPERDEVICE = "cpu"
+
+print(f"🚀 Whisper device: {WHISPERDEVICE}")
 
 MODEL = None
 
@@ -902,7 +924,7 @@ def process_text_for_tts(
         if not bypass_whisper_checking:
             print(f"\033[32m[DEBUG] Validating all candidates with Whisper for all chunks (sequentially)...\033[0m")
             model_key = whisper_model_map.get(whisper_model_name, "medium")
-            whisper_model = load_whisper_backend(model_key, use_faster_whisper, DEVICE)
+            whisper_model = load_whisper_backend(model_key, use_faster_whisper, WHISPERDEVICE)
             # Load model once
             try:
                 all_candidates = []
