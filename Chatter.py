@@ -94,14 +94,7 @@ def save_settings_json(settings_dict, json_path):
         
         
 # === VC TAB (NEW) ===
-# Select device: Apple Silicon GPU (MPS) if available, else fallback to CPU
-if torch.cuda.is_available():
-    DEVICE = "cuda"
-elif torch.backends.mps.is_available():
-    DEVICE = "mps"
-else:
-    DEVICE = "cpu"
-
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 VC_MODEL = None
 
 def get_or_load_vc_model():
@@ -112,7 +105,7 @@ def get_or_load_vc_model():
 
 
 
-def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, overlap_sec=0.1, disable_watermark=True, pitch_shift=0):
+def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, overlap_sec=0.1, disable_watermark=True):
     import soundfile as sf
     import librosa
     vc_model = get_or_load_vc_model()
@@ -131,8 +124,7 @@ def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, ov
         wav_out = vc_model.generate(
             input_audio_path,
             target_voice_path=target_voice_audio_path,
-            apply_watermark=not disable_watermark,
-            pitch_shift=pitch_shift
+            apply_watermark=not disable_watermark
         )
         out_wav = wav_out.squeeze(0).numpy()
         return model_sr, out_wav
@@ -151,8 +143,7 @@ def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, ov
         out_chunk = vc_model.generate(
             temp_chunk_path,
             target_voice_path=target_voice_audio_path,
-            apply_watermark=not disable_watermark,
-            pitch_shift=pitch_shift
+            apply_watermark=not disable_watermark
         )
         out_chunk_np = out_chunk.squeeze(0).numpy()
         out_chunks.append(out_chunk_np)
@@ -234,23 +225,8 @@ except LookupError:
     nltk.download('punkt_tab')
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
-
-# Select device: Apple Silicon GPU (MPS) if available, else fallback to CPU
-if torch.cuda.is_available():
-    DEVICE = "cuda"
-elif torch.backends.mps.is_available():
-    DEVICE = "mps"
-else:
-    DEVICE = "cpu"
-
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"🚀 Running on device: {DEVICE}")
-
-if torch.cuda.is_available():
-    WHISPERDEVICE = "cuda"
-else:
-    WHISPERDEVICE = "cpu"
-
-print(f"🚀 Whisper device: {WHISPERDEVICE}")
 
 MODEL = None
 
@@ -643,6 +619,7 @@ def generate_and_preview(*args):
 def update_audio_preview(selected_path):
     return selected_path
 
+    
 @spaces.GPU
 def generate_batch_tts(
     text: str,
@@ -924,7 +901,7 @@ def process_text_for_tts(
         if not bypass_whisper_checking:
             print(f"\033[32m[DEBUG] Validating all candidates with Whisper for all chunks (sequentially)...\033[0m")
             model_key = whisper_model_map.get(whisper_model_name, "medium")
-            whisper_model = load_whisper_backend(model_key, use_faster_whisper, WHISPERDEVICE)
+            whisper_model = load_whisper_backend(model_key, use_faster_whisper, DEVICE)
             # Load model once
             try:
                 all_candidates = []
@@ -1486,12 +1463,11 @@ def main():
                 with gr.Row():
                     vc_input_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input Audio (to convert)")
                     vc_target_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Target Voice Audio")
-                vc_pitch_shift = gr.Number(value=0, label="Pitch", step=0.5, interactive=True)
                 vc_convert_btn = gr.Button("Run Voice Conversion")
                 vc_output_files = gr.Files(label="Converted VC Audio File(s)")
                 vc_output_audio = gr.Audio(label="VC Output Preview", interactive=True)
 
-                def _vc_wrapper(input_audio_path, target_voice_audio_path, disable_watermark, pitch_shift):
+                def _vc_wrapper(input_audio_path, target_voice_audio_path, disable_watermark):
                     # Defensive: None means Gradio didn't get file yet
                     if not input_audio_path or not os.path.exists(input_audio_path):
                         raise gr.Error("Please upload or record an input audio file.")
@@ -1501,8 +1477,7 @@ def main():
                     sr, out_wav = voice_conversion(
                         input_audio_path,
                         target_voice_audio_path,
-                        disable_watermark=disable_watermark,
-                        pitch_shift=pitch_shift
+                        disable_watermark=disable_watermark
                     )
                     os.makedirs("output", exist_ok=True)
                     base = os.path.splitext(os.path.basename(input_audio_path))[0]
@@ -1513,10 +1488,11 @@ def main():
 
                 vc_convert_btn.click(
                     fn=_vc_wrapper,
-                    inputs=[vc_input_audio, vc_target_audio, disable_watermark_checkbox, vc_pitch_shift],
+                    inputs=[vc_input_audio, vc_target_audio, disable_watermark_checkbox],
                     outputs=[vc_output_files, vc_output_audio],
                 )
-
+                                         
+     
         with gr.Accordion("Show Help / Instructions", open=False):
             gr.Markdown(
             """
