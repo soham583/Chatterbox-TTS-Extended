@@ -1,16 +1,14 @@
 # 🚀 Chatterbox-TTS-Extended — All Features & Technical Explanations
 
-Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and batch speech synthesis, voice conversion, and artifact-free audio generation. It is based on [Chatterbox-TTS](https://github.com/resemble-ai/chatterbox), but adds:
+Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and batch speech synthesis, voice conversion, and artifact-reduced audio generation. It is based on [Chatterbox-TTS](https://github.com/resemble-ai/chatterbox), but adds:
 
 - **Multi-file input & batch output**
 - **Custom candidate generation & validation**
 - **Rich audio post-processing**
 - **Whisper/faster-whisper validation**
-- **Voice conversion (VC) tab**
+- **Voice conversion (VC) tab)**
 - **Full-featured persistent UI with parallelism and artifact reduction**
 - **Optional audio denoising with pyrnnoise - removes most artifacts**
-- **Subtitle export (.srt / .vtt)**
-- **Chapter-prefixed output naming for book narration**
 
 ---
 
@@ -50,11 +48,9 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 | Dot-letter ("J.R.R.") correction          | ✔             | Yes          |
 | Lowercase & whitespace normalization      | ✔             | Yes          |
 | Auto-Editor post-processing               | ✔             | Yes          |
-| **pyrnnoise denoising**                   | ✔             | Yes          |
+| **pyrnnoise denoising (RNNoise)**         | ✔             | Yes          |
 | FFmpeg normalization (EBU/peak)           | ✔             | Yes          |
 | WAV/MP3/FLAC export                       | ✔             | Yes          |
-| **Subtitle export (.srt / .vtt)**         | ✔             | Yes          |
-| **Chapter-prefixed output naming**        | ✔             | Yes          |
 | Candidates per chunk, retries, fallback   | ✔             | Yes          |
 | Parallelism (workers)                     | ✔             | Yes          |
 | Whisper/faster-whisper backend            | ✔             | Yes          |
@@ -70,7 +66,7 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 
 - **Text box:** For direct text entry (single or multi-line).
 - **Multi-file upload:** Drag-and-drop any number of `.txt` files.
-  - Choose to merge them into one audio or process each as a separate output file.
+  - Choose to merge them into one audio or process **each as a separate output** (toggle in the UI).
   - Outputs are named for sorting and reproducibility.
 - **Reference audio input:** Upload or record a sample to condition the generated voice.
 - **Settings file support:** Load or save all UI settings as JSON for easy workflow repeatability.
@@ -97,8 +93,8 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 
 ## Batching, Chunking & Grouping
 
-- **Sentence batching:** Groups sentences up to 300 characters per chunk (adjustable in code).
-- **Smart-append short sentences:** When batching is off, merges very short sentences for smooth prosody.
+- **Sentence batching:** Groups sentences up to ~300 characters per chunk (adjustable in code).
+- **Smart-append short sentences:** When batching is off, merges very short sentences for smoother prosody.
 - **Recursive long sentence splitting:** Automatically splits long sentences at `; : - ,` or by character count.
 - **Parallel chunk processing:** Multiple chunks are generated at once for speed (user control).
 
@@ -110,18 +106,18 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 - **Whitespace normalization:** Strips extra spaces/newlines.
 - **Dot-letter fix:** Converts `"J.R.R."` to `"J R R"` to improve initialisms and names.
 - **Inline reference number removal:** Automatically removes numbers after sentence-ending punctuation (e.g., `.188` or `.”3`).
-- **Sound word removal/replacement:** Configurable box for unwanted noises or phrases, e.g. `um`, `ahh`, or custom mappings like `zzz=>sigh`.
+- **Sound word removal/replacement:** Configurable list for unwanted noises or phrases, e.g., `um`, `ahh`, or mappings like `zzz=>sigh`.
   - Handles standalone words, possessives, quoted patterns, and dash/punctuation-only removals.
 
 ---
 
 ## Audio Post-Processing
 
-- **pyrnnoise Denoising:**
-  - Removes almost all artifacts.
-  - Useful for improving clarity in generated or converted speech.
-  - Exposed in the UI as an optional toggle.
-  - See also: [Tips & Troubleshooting](#tips--troubleshooting) for usage guidance.
+- **pyrnnoise Denoising (RNNoise):**
+  - Optional toggle for almost 100% artifact removal.
+  - Runs **before** Auto-Editor and normalization.
+  - Uses the `denoise` CLI if available; otherwise falls back to the Python API.
+  - Temporary conversion to **48 kHz mono s16** for best compatibility; output is restored to original sample rate.
 - **Auto-Editor integration:**
   - Trims silences/stutters/artifacts after generation.
   - **Threshold** and **margin** are adjustable in UI.
@@ -136,30 +132,28 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 ## Export & Output Options
 
 - **Multiple audio formats:** WAV (uncompressed), MP3 (320k), FLAC (lossless). Any/all selectable in UI.
-- **Subtitle export:** Automatically generate `.srt` and `.vtt` subtitle files for every narration.
-- **Chapter-prefixed output:** In book narration workflows, output filenames are automatically prefixed with chapter names for organization.
 - **Output file naming:** Each output includes base name, timestamp, generation, and seed for tracking.
-- **Batch export:** If “separate files” is checked, each text file gets its own processed output.
+- **Batch export:** If “separate files” is checked, each uploaded text file gets its own processed output.
+- **Disable watermarking:** Optional toggle to disable watermarking during generation.
 
 ---
 
 ## Generation Logic & Quality Control
 
-- **Number of generations:** Generate multiple different outputs at once (“takes”).
-- **Candidates per chunk:** For each chunk, generate multiple variants.
-- **Max attempts per candidate:** If validation fails, retries up to N times for best result.
-- **Whisper validation:** Uses speech-to-text to check each candidate and picks the closest transcript match (can bypass for speed).
-- **Fallback strategies:** If all candidates fail, use the longest transcript or highest similarity score.
+- **Number of generations:** Produce multiple different outputs at once (“takes”).  
+- **Candidates per chunk:** For each chunk, generate multiple variants.  
+- **Max attempts per candidate:** If validation fails, retry up to N times.  
+- **Deterministic seeding:** A per-chunk/per-candidate/per-attempt seed is derived from the base seed for reproducibility.  
+- **Fallback strategies:** If all candidates fail validation, use the longest transcript or highest similarity score.
 
 ---
 
 ## Whisper Sync & Validation
 
-- **Model choice:** Select between OpenAI Whisper and faster-whisper (SYSTRAN). Both have multiple model sizes (VRAM vs. speed tradeoff).
-- **Whisper backend and size exposed in UI:** Shows VRAM estimates and auto-disables if not needed.
-- **Per-chunk Whisper validation:** Each audio chunk is transcribed and compared to its intended text.
-- **Fallbacks:** If all candidates fail, configurable selection of longest transcript or highest score.
-- **Bypass option:** Skip Whisper entirely (faster, but riskier for artifacts).
+- **Backends:** Choose **OpenAI Whisper** or **faster-whisper** (SYSTRAN), with multiple model sizes (VRAM vs. speed tradeoff).
+- **Per-chunk validation:** Each audio chunk is transcribed and compared to its intended text.
+- **Bypass option:** Skip Whisper entirely (faster, but may allow more TTS errors).
+- **Use-longest-transcript-on-fail:** Optional fallback if no candidate passes validation.
 
 ---
 
@@ -167,82 +161,78 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 
 - **Full parallelism:** User-configurable worker count (default 4).
 - **Worker control:** Set to 1 for low-memory or debugging, higher for speed.
-- **VRAM management:** Cleans up GPU memory after Whisper use to avoid leaks.
+- **VRAM management:** Clears Whisper model and GPU cache after validation to avoid leaks.
 
 ---
 
 ## Persistent Settings & UI
 
-- **JSON settings:** UI choices are saved/restored automatically, with option to import/export.
-- **Per-output settings:** Every output audio file also gets a `.settings.json` and `.settings.csv` with all relevant parameters (for reproducibility and workflow management).
+- **JSON settings:** UI choices are saved/restored automatically; import/export supported.
+- **Per-output settings artifacts:** Each output also writes a `.settings.json` and `.settings.csv` capturing all parameters and output filenames.
 - **Complete Gradio UI:** All options available as toggles, sliders, dropdowns, checkboxes, and file pickers.
-- **Audio preview/download:** Listen to or download any generated output from the UI.
-- **Help/Instructions:** Accordion panel with detailed explanations of every feature and control.
+- **Audio preview & download:** Listen to or download any generated output from the UI.
+- **Help/Instructions:** Accordion with detailed guidance for each setting.
 
 ---
 
 ## 🎙️ Voice Conversion (VC) Tab
 
-Convert any voice to sound like another!  
-**The Voice Conversion tab lets you:**
+Convert any voice to sound like another!
 
+**The Voice Conversion tab lets you:**
 - Upload or record the **input audio** (the voice to convert).
 - Upload or record the **target/reference voice** (the voice to match).
 - Click **Run Voice Conversion** — get a new audio file with the same words but the target voice!
 
 **Technical highlights:**
-
-- Handles long audio by splitting into overlapping chunks, recombining with crossfades for seamless transitions.
-- Output matches model’s sample rate and fidelity.
+- Handles long audio by splitting into overlapping chunks and recombining with crossfades.
+- Output matches the model’s sample rate and fidelity.
 - Automatic chunking and processing—no manual intervention needed.
-- Option to disable watermarking.
+- **Pitch shift** control.
+- Option to **disable watermarking**.
 
 ---
 
 ## Tips & Troubleshooting
 
-- **Out of VRAM or slow?**
-  - Lower parallel workers
-  - Use a smaller/faster Whisper model
-  - Reduce number of candidates
-- **Artifacts/Errors?**
-  - Increase candidates/retries
-  - Adjust auto-editor threshold/margin
-  - Refine sound word replacements
 - **Background noise in output?**
   - Enable **pyrnnoise denoising** in the UI to clean up artifacts.
-  - Run denoising before normalization for best results.
+  - Denoising runs before Auto-Editor and normalization for best results.
+- **Out of VRAM or slow?**
+  - Lower parallel workers, pick a smaller/faster Whisper model, reduce candidates.
+- **Artifacts/Errors?**
+  - Increase candidates/retries, adjust Auto-Editor threshold/margin, refine sound word replacements.
 - **Choppy audio?**
-  - Increase auto-editor margin
-  - Lower threshold
+  - Increase Auto-Editor margin; lower threshold.
 - **Reproducibility**
-  - Use a fixed random seed
+  - Set a fixed random seed.
 
 ---
 
 ## 📝 Installation
 
-Requires Python 3.10.x and [FFMPEG](https://ffmpeg.org/download.html).  
-Clone the repo:
+Requires **Python 3.10.x** and **[FFmpeg](https://ffmpeg.org/download.html)** (on PATH).
 
+Clone the repo:
 ```bash
 git clone https://github.com/petermg/Chatterbox-TTS-Extended
 ```
 
 Install requirements:
-
 ```bash
 pip install --force-reinstall -r requirements.txt
 # If needed, try requirements.base.with.versions.txt or requirements_frozen.txt
 ```
 
 Run:
-
 ```bash
+# Use your repo's main file. For example:
 python Chatter.py
+# or, if your file is named like this branch:
+python zChatter.py
 ```
 
-If FFMPEG isn’t in your PATH, put the executable in the same directory as your script.
+If [FFmpeg](https://ffmpeg.org/download.html) isn’t in your PATH, place the executable alongside the script or add it to PATH.
 
 ---
 
@@ -251,7 +241,9 @@ If FFMPEG isn’t in your PATH, put the executable in the same directory as your
 Open an issue or pull request for suggestions, bug reports, or improvements!
 
 ---
+
 ## Known Bugs:
+
 It seems if you use fasterwhisper for validation, sometimes it just silently crashes. Apparently this has to do with using the fasterwhisper model. It's not actually the python code. So if you are experiencing this, switch back to the original WhisperSync model.
 
 ---
