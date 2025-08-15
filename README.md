@@ -32,6 +32,7 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 - [Tips & Troubleshooting](#tips--troubleshooting)
 - [Installation](#-installation)
 - [Feedback & Contributions](#-feedback--contributions)
+- [Known Bugs](#known-bugs)
 
 ---
 
@@ -248,3 +249,9 @@ If FFMPEG isn’t in your PATH, put the executable in the same directory as your
 ## 📣 Feedback & Contributions
 
 Open an issue or pull request for suggestions, bug reports, or improvements!
+
+---
+## Known Bugs:
+It seems if you use fasterwhisper for validation, sometimes it just silently crashes. Apparently this has to do with using the fasterwhisper model. It's not actually the python code. So if you are experiencing this, switch back to the original WhisperSync model.
+
+---
