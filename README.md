@@ -182,6 +182,7 @@ Convert any voice to sound like another!
 **The Voice Conversion tab lets you:**
 - Upload or record the **input audio** (the voice to convert).
 - Upload or record the **target/reference voice** (the voice to match).
+- Adjust pitch (optional)
 - Click **Run Voice Conversion** — get a new audio file with the same words but the target voice!
 
 **Technical highlights:**
@@ -247,3 +248,4 @@ Open an issue or pull request for suggestions, bug reports, or improvements!
 It seems if you use fasterwhisper for validation, sometimes it just silently crashes. Apparently this has to do with using the fasterwhisper model. It's not actually the python code. So if you are experiencing this, switch back to the original WhisperSync model.
 
 ---
+
