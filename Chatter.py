@@ -24,7 +24,15 @@ from faster_whisper import WhisperModel as FasterWhisperModel
 import json
 import csv
 import soundfile as sf
+import inspect, traceback
 from chatterbox.src.chatterbox.vc import ChatterboxVC
+try:
+    import pyrnnoise
+    _PYRNNOISE_AVAILABLE = True
+except Exception:
+    _PYRNNOISE_AVAILABLE = False
+
+
 SETTINGS_PATH = "settings.json"
 #THIS IS THE START
 def load_settings():
@@ -94,15 +102,8 @@ def save_settings_json(settings_dict, json_path):
         
         
 # === VC TAB (NEW) ===
-# Select device: Apple Silicon GPU (MPS) if available, else fallback to CPU
-if torch.cuda.is_available():
-    DEVICE = "cuda"
-elif torch.backends.mps.is_available():
-    DEVICE = "mps"
-else:
-    DEVICE = "cpu"
 
-VC_MODEL = None
+VC_MODEL = None  # Reuse the global DEVICE defined earlier
 
 def get_or_load_vc_model():
     global VC_MODEL
@@ -113,8 +114,6 @@ def get_or_load_vc_model():
 
 
 def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, overlap_sec=0.1, disable_watermark=True, pitch_shift=0):
-    import soundfile as sf
-    import librosa
     vc_model = get_or_load_vc_model()
     model_sr = vc_model.sr
 
@@ -220,6 +219,7 @@ In the Land of Mordor where the Shadows lie.""",
         "normalize_tp_slider": -2,
         "normalize_lra_slider": 7,
         "sound_words_field": "",
+        "use_pyrnnoise_checkbox": False,
     }
         
 settings = load_settings()        
@@ -228,10 +228,10 @@ try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
     nltk.download('punkt')
-try:
-    nltk.data.find('tokenizers/punkt_tab')
-except LookupError:
-    nltk.download('punkt_tab')
+#try:
+#    nltk.data.find('tokenizers/punkt_tab')
+#except LookupError:
+#    nltk.download('punkt_tab')
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
 
@@ -244,13 +244,20 @@ else:
     DEVICE = "cpu"
 
 print(f"🚀 Running on device: {DEVICE}")
-
-if torch.cuda.is_available():
-    WHISPERDEVICE = "cuda"
-else:
-    WHISPERDEVICE = "cpu"
-
-print(f"🚀 Whisper device: {WHISPERDEVICE}")
+# ---- Determinism (CUDA / PyTorch) ----
+import os as _os, torch as _torch
+_torch.backends.cudnn.benchmark = False
+if hasattr(_torch.backends.cudnn, "deterministic"):
+    _torch.backends.cudnn.deterministic = True
+try:
+    _torch.use_deterministic_algorithms(True, warn_only=True)
+except Exception:
+    pass
+_os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":16:8")
+if DEVICE == "cuda":
+    _torch.backends.cuda.matmul.allow_tf32 = False
+    _torch.backends.cudnn.allow_tf32 = False
+# --------------------------------------
 
 MODEL = None
 
@@ -259,7 +266,6 @@ def load_whisper_backend(model_name, use_faster_whisper, device):
         print(f"[DEBUG] Loading faster-whisper model: {model_name}")
         return FasterWhisperModel(model_name, device=device, compute_type="float16" if device=="cuda" else "float32")
     else:
-        import whisper
         print(f"[DEBUG] Loading openai-whisper model: {model_name}")
         return whisper.load_model(model_name, device=device)
 
@@ -270,6 +276,8 @@ def get_or_load_model():
         MODEL = ChatterboxTTS.from_pretrained(DEVICE)
         if hasattr(MODEL, 'to') and str(MODEL.device) != DEVICE:
             MODEL.to(DEVICE)
+        if hasattr(MODEL, "eval"):
+            MODEL.eval()
         print(f"Model loaded on device: {getattr(MODEL, 'device', 'unknown')}")
     return MODEL
 
@@ -285,6 +293,20 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
     random.seed(seed)
     np.random.seed(seed)
+
+def derive_seed(base_seed: int, chunk_idx: int, cand_idx: int, attempt_idx: int) -> int:
+    """
+    Deterministically derive a 32-bit seed for each (chunk, candidate, attempt)
+    from the user-supplied base seed. This avoids any use of global random().
+    """
+    # use 64-bit mixing then clamp to 32-bit
+    mix = (np.uint64(base_seed) * np.uint64(1000003)
+           + np.uint64(chunk_idx) * np.uint64(10007)
+           + np.uint64(cand_idx) * np.uint64(10009)
+           + np.uint64(attempt_idx) * np.uint64(101))
+    s = int(mix & np.uint64(0xFFFFFFFF))
+    return s if s != 0 else 1
+
 
 def normalize_whitespace(text: str) -> str:
     return re.sub(r'\s{2,}', ' ', text.strip())
@@ -449,13 +471,98 @@ def normalize_with_ffmpeg(input_wav, output_wav, method="ebu", i=-24, tp=-2, lra
         (
             ffmpeg
             .input(input_wav)
-            .output(output_wav, af="dynaudnorm")
+            .output(output_wav, af="alimiter=limit=-2dB")
             .overwrite_output()
             .run(quiet=True)
         )
+
     else:
         raise ValueError("Unknown normalization method.")
     os.replace(output_wav, input_wav)
+
+def _convert_to_pcm48k_mono(input_wav, output_wav, sr=48000):
+    """
+    Convert to 48kHz, mono, s16 PCM for RNNoise (pyrnnoise) best compatibility.
+    """
+    subprocess.run([
+        "ffmpeg", "-y", "-i", input_wav,
+        "-ac", "2", "-ar", str(sr), "-sample_fmt", "s16", output_wav
+    ], check=True)
+
+
+def _run_pyrnnoise(input_wav, output_wav):
+    """
+    Try the pyrnnoise CLI ('denoise') first; if missing or fails, fall back to Python API.
+    """
+    if not _PYRNNOISE_AVAILABLE:
+        print("[DENOISE] pyrnnoise not available; skipping.")
+        return False
+
+    print("[DENOISE] Running pyrnnoise (RNNoise)…")
+    # Prefer CLI if present (often faster and lighter on Python mem)
+    try:
+        result = subprocess.run(["denoise", input_wav, output_wav], capture_output=True, text=True)
+        if result.returncode == 0 and os.path.exists(output_wav) and os.path.getsize(output_wav) > 1024:
+            print(f"[DENOISE] Saved: {output_wav}")
+            return True
+        else:
+            print("[DENOISE] pyrnnoise CLI failed, falling back to Python API…")
+    except FileNotFoundError:
+        print("[DENOISE] pyrnnoise CLI not found, using Python API…")
+
+    # Python API fallback
+    rate, data = sf.read(input_wav)
+    denoiser = pyrnnoise.RNNoise(rate)
+    denoised = denoiser.process_buffer(data)
+    sf.write(output_wav, denoised, rate)
+    print(f"[DENOISE] Saved: {output_wav}")
+    return True
+
+
+def _apply_pyrnnoise_in_place(wav_output_path):
+    """
+    Denoise wav_output_path with RNNoise, preserving the original path.
+    Converts to 48k mono s16 for processing, then converts back to the original sample rate.
+    """
+    try:
+        original_sr = librosa.get_samplerate(wav_output_path)
+    except Exception:
+        # Fallback if librosa can't read it
+        original_sr = None
+
+    tmp_48kmono = wav_output_path.replace(".wav", "_48kmono.wav")
+    tmp_dn = wav_output_path.replace(".wav", "_dn.wav")
+    tmp_back = wav_output_path.replace(".wav", "_dn_resamp.wav")
+
+    try:
+        _convert_to_pcm48k_mono(wav_output_path, tmp_48kmono)
+        ok = _run_pyrnnoise(tmp_48kmono, tmp_dn)
+        if not ok:
+            return False
+
+        # Convert back to original sample rate (if known), keep mono
+        if original_sr:
+            subprocess.run([
+                "ffmpeg", "-y", "-i", tmp_dn, "-ar", str(original_sr), "-ac", "1", tmp_back
+            ], check=True)
+            os.replace(tmp_back, wav_output_path)
+        else:
+            # If we don't know SR, just adopt the denoised file
+            os.replace(tmp_dn, wav_output_path)
+
+        print(f"[DENOISE] Denoised in-place: {wav_output_path}")
+        return True
+    except Exception as e:
+        print(f"[DENOISE] RNNoise failed: {e}")
+        return False
+    finally:
+        for p in [tmp_48kmono, tmp_dn, tmp_back]:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
 
 def get_wav_duration(path):
     try:
@@ -470,7 +577,7 @@ def normalize_for_compare_all_punct(text):
     text = re.sub(r'\s+', ' ', text)
     return text.lower().strip()
 
-def fuzzy_match(text1, text2, threshold=1.0):
+def fuzzy_match(text1, text2, threshold=0.85):
     t1 = normalize_for_compare_all_punct(text1)
     t2 = normalize_for_compare_all_punct(text2)
     seq = difflib.SequenceMatcher(None, t1, t2)
@@ -546,12 +653,6 @@ def whisper_check_mp(candidate_path, target_text, whisper_model, use_faster_whis
     import string
     import os
 
-    def normalize_for_compare_all_punct(text):
-        text = re.sub(r'[–—-]', ' ', text)
-        text = re.sub(rf"[{re.escape(string.punctuation)}]", '', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.lower().strip()
-
     try:
         print(f"\033[32m[DEBUG] Whisper checking: {candidate_path}\033[0m")
         if use_faster_whisper:
@@ -592,10 +693,7 @@ def process_one_chunk(
 
         for cand_idx in range(num_candidates_per_chunk):
             for attempt in range(max_attempts_per_candidate):
-                if cand_idx == 0 and attempt == 0:
-                    candidate_seed = this_seed
-                else:
-                    candidate_seed = random.randint(1, 2**32-1)
+                candidate_seed = derive_seed(this_seed, idx, cand_idx, attempt)
                 set_seed(candidate_seed)
                 try:
                     print(f"\033[32m[DEBUG] Generating candidate {cand_idx+1} attempt {attempt+1} for chunk {idx}...\033[0m")
@@ -624,6 +722,7 @@ def process_one_chunk(
                         'sentence_group': sentence_group,
                         'cand_idx': cand_idx,
                         'attempt': attempt,
+                        'seed': candidate_seed,
                     })
                     break
                 except Exception as e:
@@ -632,12 +731,124 @@ def process_one_chunk(
         print(f"[ERROR] Exception in chunk {idx}: {exc}")
     return (idx, candidates)
 
+def process_one_chunk_deterministic(
+    model, sentence_group, idx, gen_index, this_seed,
+    audio_prompt_path_input, exaggeration_input, temperature_input, cfgw_input,
+    disable_watermark, num_candidates_per_chunk, max_attempts_per_candidate,
+    bypass_whisper_checking,
+    retry_attempt_number=1
+):
+    """
+    Deterministic per-chunk generation that does NOT mutate global RNG.
+    - If model.generate supports `generator`, use a per-call torch.Generator.
+    - Else, fallback to a forked RNG scope + manual seeds (still thread-local).
+    Also logs full tracebacks on failure so we can see the exact cause.
+    """
+    import inspect, traceback
+
+    candidates = []
+    try:
+        if not sentence_group.strip():
+            print(f"\033[32m[DEBUG] Skipping empty sentence group at index {idx}\033[0m")
+            return (idx, candidates)
+        if len(sentence_group) > 300:
+            print(f"\033[33m[WARNING] Very long sentence group at index {idx} (len={len(sentence_group)}); proceeding anyway.\033[0m")
+
+        print(f"\033[32m[DEBUG] [DET] Processing group {idx}: len={len(sentence_group)}:\033[33m {sentence_group}\033[0m")
+
+        # Detect whether model.generate accepts a `generator` argument
+        supports_generator = False
+        try:
+            sig = inspect.signature(model.generate)
+            supports_generator = ("generator" in sig.parameters)
+        except Exception:
+            supports_generator = False
+
+        model_device = str(getattr(model, "device", "cpu"))
+        on_cuda = torch.cuda.is_available() and (model_device == "cuda")
+        devices = [torch.cuda.current_device()] if on_cuda else []
+
+        for cand_idx in range(num_candidates_per_chunk):
+            for attempt in range(max_attempts_per_candidate):
+                candidate_seed = derive_seed(this_seed, idx, cand_idx, attempt)
+                print(f"\033[32m[DEBUG] [DET] Generating cand {cand_idx+1} attempt {attempt+1} for chunk {idx} (seed={candidate_seed}).\033[0m")
+
+                try:
+                    if supports_generator and (model_device != "mps"):
+                        # Use a per-call generator on the matching device (CUDA→cuda, otherwise CPU)
+                        gen_device = "cuda" if on_cuda else "cpu"
+                        gen = torch.Generator(device=gen_device)
+                        gen.manual_seed(int(candidate_seed) & 0xFFFFFFFFFFFFFFFF)
+
+                        wav = model.generate(
+                            sentence_group,
+                            audio_prompt_path=audio_prompt_path_input,
+                            exaggeration=min(exaggeration_input, 1.0),
+                            temperature=temperature_input,
+                            cfg_weight=cfgw_input,
+                            apply_watermark=not disable_watermark,
+                            generator=gen,  # isolated RNG
+                        )
+                    else:
+                        # Fallback: fork RNG state locally and seed inside the scope
+                        with torch.random.fork_rng(devices=devices, enabled=True):
+                            torch.manual_seed(int(candidate_seed))
+                            if on_cuda:
+                                torch.cuda.manual_seed_all(int(candidate_seed))
+                            wav = model.generate(
+                                sentence_group,
+                                audio_prompt_path=audio_prompt_path_input,
+                                exaggeration=min(exaggeration_input, 1.0),
+                                temperature=temperature_input,
+                                cfg_weight=cfgw_input,
+                                apply_watermark=not disable_watermark,
+                            )
+
+                    candidate_path = f"temp/gen{gen_index+1}_chunk_{idx:03d}_cand_{cand_idx+1}_try{retry_attempt_number}_seed{candidate_seed}.wav"
+                    torchaudio.save(candidate_path, wav, model.sr)
+
+                    # Wait briefly for filesystem consistency
+                    for _ in range(10):
+                        if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1024:
+                            break
+                        time.sleep(0.05)
+
+                    duration = get_wav_duration(candidate_path)
+                    print(f"\033[32m[DEBUG] [DET] Saved cand {cand_idx+1}, attempt {attempt+1}, duration={duration:.3f}s: {candidate_path}\033[0m")
+                    candidates.append({
+                        'path': candidate_path,
+                        'duration': duration,
+                        'sentence_group': sentence_group,
+                        'cand_idx': cand_idx,
+                        'attempt': attempt,
+                        'seed': candidate_seed,
+                    })
+
+                    # If bypass is ON we can short-circuit after first successful candidate
+                    if bypass_whisper_checking:
+                        break
+
+                except Exception as e:
+                    tb = traceback.format_exc()
+                    print(f"[ERROR] Deterministic generation failed for chunk {idx}, cand {cand_idx+1}, attempt {attempt+1}: {e}\n{tb}")
+                    # Continue to next attempt/candidate
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[ERROR] process_one_chunk_deterministic failed for index {idx}: {e}\n{tb}")
+
+    return (idx, candidates)
+
+
+
+
+
 def generate_and_preview(*args):
 
     output_paths = generate_batch_tts(*args)
     audio_files = [p for p in output_paths if os.path.splitext(p)[1].lower() in [".wav", ".mp3", ".flac"]]
     dropdown_value = audio_files[0] if audio_files else None
-    return output_paths, gr.Dropdown(choices=audio_files, value=dropdown_value), dropdown_value
+    return output_paths, gr.update(choices=audio_files, value=dropdown_value), dropdown_value
     
 
 def update_audio_preview(selected_path):
@@ -652,6 +863,7 @@ def generate_batch_tts(
     temperature_input: float,
     seed_num_input: int,
     cfgw_input: float,
+    use_pyrnnoise: bool,
     use_auto_editor: bool,
     ae_threshold: float,
     ae_margin: float,
@@ -680,7 +892,7 @@ def generate_batch_tts(
     sound_words_field: str = "",
     use_faster_whisper: bool = False,
     generate_separate_audio_files: bool = False,
-) -> str:
+) -> list[str]:
     print(f"[DEBUG] Received audio_prompt_path_input: {audio_prompt_path_input!r}")
 
     if not audio_prompt_path_input or (isinstance(audio_prompt_path_input, str) and not os.path.isfile(audio_prompt_path_input)):
@@ -721,6 +933,7 @@ def generate_batch_tts(
                     job_text, base,
                     audio_prompt_path_input,
                     exaggeration_input, temperature_input, seed_num_input, cfgw_input,
+                    use_pyrnnoise,  # <-- add this
                     use_auto_editor, ae_threshold, ae_margin, export_formats, enable_batching,
                     to_lowercase, normalize_spacing, fix_dot_letters, remove_reference_numbers, keep_original_wav,
                     smart_batch_short_sentences, disable_watermark, num_generations,
@@ -751,6 +964,7 @@ def generate_batch_tts(
         return process_text_for_tts(
             text, input_basename, audio_prompt_path_input,
             exaggeration_input, temperature_input, seed_num_input, cfgw_input,
+            use_pyrnnoise,
             use_auto_editor, ae_threshold, ae_margin, export_formats, enable_batching,
             to_lowercase, normalize_spacing, fix_dot_letters, remove_reference_numbers, keep_original_wav,
             smart_batch_short_sentences, disable_watermark, num_generations,
@@ -765,6 +979,7 @@ def generate_batch_tts(
         return process_text_for_tts(
             text, input_basename, audio_prompt_path_input,
             exaggeration_input, temperature_input, seed_num_input, cfgw_input,
+            use_pyrnnoise,
             use_auto_editor, ae_threshold, ae_margin, export_formats, enable_batching,
             to_lowercase, normalize_spacing, fix_dot_letters, remove_reference_numbers, keep_original_wav,
             smart_batch_short_sentences, disable_watermark, num_generations,
@@ -782,6 +997,7 @@ def process_text_for_tts(
     temperature_input,
     seed_num_input,
     cfgw_input,
+    use_pyrnnoise,
     use_auto_editor,
     ae_threshold,
     ae_margin,
@@ -897,7 +1113,7 @@ def process_text_for_tts(
             with ThreadPoolExecutor(max_workers=num_parallel_workers) as executor:
                 futures = [
                     executor.submit(
-                        process_one_chunk,
+                        process_one_chunk_deterministic,
                         model, group, idx, gen_index, this_seed,
                         audio_prompt_path_input, exaggeration_input, temperature_input, cfgw_input,
                         disable_watermark, num_candidates_per_chunk, max_attempts_per_candidate, bypass_whisper_checking
@@ -913,7 +1129,7 @@ def process_text_for_tts(
         else:
             # Sequential mode: Process chunks one by one
             for idx, group in enumerate(sentence_groups):
-                idx, candidates = process_one_chunk(
+                idx, candidates = process_one_chunk_deterministic(
                     model, group, idx, gen_index, this_seed,
                     audio_prompt_path_input, exaggeration_input, temperature_input, cfgw_input,
                     disable_watermark, num_candidates_per_chunk, max_attempts_per_candidate, bypass_whisper_checking
@@ -924,7 +1140,7 @@ def process_text_for_tts(
         if not bypass_whisper_checking:
             print(f"\033[32m[DEBUG] Validating all candidates with Whisper for all chunks (sequentially)...\033[0m")
             model_key = whisper_model_map.get(whisper_model_name, "medium")
-            whisper_model = load_whisper_backend(model_key, use_faster_whisper, WHISPERDEVICE)
+            whisper_model = load_whisper_backend(model_key, use_faster_whisper, DEVICE)
             # Load model once
             try:
                 all_candidates = []
@@ -946,7 +1162,7 @@ def process_text_for_tts(
                             continue
                         path, score, transcribed = whisper_check_mp(candidate_path, sentence_group, whisper_model, use_faster_whisper)
                         print(f"\033[32m[DEBUG] [Chunk {chunk_idx}] {os.path.basename(candidate_path)}: score={score:.3f}, transcript=\033[33m'{transcribed}'\033[0m")
-                        if score >= 0.95:
+                        if score >= 0.85:
                             chunk_validations[chunk_idx].append((cand['duration'], cand['path']))
                         else:
                             chunk_failed_candidates[chunk_idx].append((score, cand['path'], transcribed))
@@ -972,12 +1188,12 @@ def process_text_for_tts(
                     with ThreadPoolExecutor(max_workers=num_parallel_workers) as executor:
                         futures = [
                             executor.submit(
-                                process_one_chunk,
+                                process_one_chunk_deterministic,
                                 model,
                                 chunk_candidate_map[chunk_idx][0]['sentence_group'] if chunk_candidate_map[chunk_idx] else sentence_groups[chunk_idx],
                                 chunk_idx,
                                 gen_index,
-                                random.randint(1, 2**32-1),
+                                this_seed,  # base; per-candidate attempts derive inside deterministic function
                                 audio_prompt_path_input, exaggeration_input, temperature_input, cfgw_input,
                                 disable_watermark, num_candidates_per_chunk, 1,
                                 bypass_whisper_checking,
@@ -1034,7 +1250,8 @@ def process_text_for_tts(
                 # Clean up Whisper model
                 try:
                     del whisper_model
-                    torch.cuda.empty_cache()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                     gc.collect()
                     print("\033[32m[DEBUG] Whisper model deleted and VRAM cache cleared.\033[0m")
                 except Exception as e:
@@ -1044,15 +1261,23 @@ def process_text_for_tts(
             for chunk_idx in sorted(chunk_candidate_map.keys()):
                 candidates = chunk_candidate_map[chunk_idx]
                 # Only consider candidates whose files exist and are > 1024 bytes
-                valid_candidates = [c for c in candidates if os.path.exists(c['path']) and os.path.getsize(c['path']) > 1024]
+                valid_candidates = [
+                    c for c in candidates
+                    if os.path.exists(c['path']) and os.path.getsize(c['path']) > 1024
+                ]
                 if valid_candidates:
-                    best = min(valid_candidates, key=lambda c: c['duration'])
+                    # Prefer the primary seeded candidate deterministically (cand_idx=0, attempt=0)
+                    if all(('cand_idx' in c and 'attempt' in c) for c in valid_candidates):
+                        best = sorted(valid_candidates, key=lambda c: (c['cand_idx'], c['attempt']))[0]
+                    else:
+                        best = min(valid_candidates, key=lambda c: c['duration'])
+
                     print(f"\033[32m[DEBUG] [Bypass Whisper] Selected {best['path']} as shortest candidate for chunk {chunk_idx}\033[0m")
                     waveform, sr = torchaudio.load(best['path'])
                     waveform_list.append(waveform)
                 else:
                     print(f"\033[33m[WARNING] No valid candidates found for chunk {chunk_idx} (all generations failed)\033[0m")
-                    
+
 
         if not waveform_list:
             print(f"\033[33m[WARNING] No audio generated in generation {gen_index+1}\033[0m")
@@ -1065,6 +1290,19 @@ def process_text_for_tts(
         torchaudio.save(wav_output, full_audio, model.sr)
         print(f"\33[104m[DEBUG] \33[5mFinal audio concatenated, output file: {wav_output}\033[0m")
 
+        # --- DENOISE (optional, before Auto-Editor) ---
+        if use_pyrnnoise:
+            if _PYRNNOISE_AVAILABLE:
+                try:
+                    if _apply_pyrnnoise_in_place(wav_output):
+                        print(f"\033[32m[DEBUG] Denoised with RNNoise before Auto-Editor: {wav_output}\033[0m")
+                    else:
+                        print(f"\033[33m[WARNING] RNNoise returned False; continuing without denoise.\033[0m")
+                except Exception as e:
+                    print(f"[ERROR] RNNoise failed: {e}")
+            else:
+                print("[WARNING] pyrnnoise not installed; skipping denoise.")
+                
         if use_auto_editor:
             try:
                 cleaned_output = wav_output.replace(".wav", "_cleaned.wav")
@@ -1136,6 +1374,7 @@ def process_text_for_tts(
             "temp_slider": temperature_input,
             "seed_input": this_seed,
             "cfg_weight_slider": cfgw_input,
+            "use_pyrnnoise_checkbox": use_pyrnnoise,
             "use_auto_editor_checkbox": use_auto_editor,
             "threshold_slider": ae_threshold,
             "margin_slider": ae_margin,
@@ -1207,51 +1446,89 @@ whisper_model_map = {
 def apply_settings_json(settings_json):
     import json
     if not settings_json:
-        return [gr.update() for _ in range(35)]
+        return [gr.update() for _ in range(36)]
     try:
         with open(settings_json.name, "r", encoding="utf-8") as f:
             loaded = json.load(f)
-        # This order must match the order of your Gradio inputs!
+
+        # --- helpers for coercion/back-compat ---
+        def _float(x, default):
+            try:
+                return float(x)
+            except Exception:
+                return default
+
+        def _int(x, default):
+            try:
+                return int(x)
+            except Exception:
+                return default
+
+        def _bool(x, default):
+            if isinstance(x, bool):
+                return x
+            if isinstance(x, (int, float)):
+                return bool(x)
+            if isinstance(x, str):
+                return x.strip().lower() in {"1", "true", "yes", "on"}
+            return default
+
+        # Map whisper model code -> label if needed
+        wm = loaded.get(
+            "whisper_model_dropdown",
+            "medium (~5–8 GB OpenAI / ~2.5–4.5 GB faster-whisper)"
+        )
+        if wm not in whisper_model_map:  # if a code like "medium" was saved
+            inv = {v: k for k, v in whisper_model_map.items()}
+            wm = inv.get(wm, "medium (~5–8 GB OpenAI / ~2.5–4.5 GB faster-whisper)")
+
+        # Guard normalize method against legacy/bad numeric values
+        nm = loaded.get("normalize_method_dropdown", "ebu")
+        if isinstance(nm, (int, float)) or nm not in {"ebu", "peak"}:
+            nm = "ebu"
+
+        # --- CRITICAL: return values in EXACT outputs order (36) ---
         return [
-            loaded.get("text_input", ""),
-            None,  # text_file_input: cannot load a file from JSON
-            loaded.get("separate_files_checkbox", False),
-            loaded.get("audio_prompt_path_input", ""),
-            loaded.get("export_format_checkboxes", ["wav"]),
-            loaded.get("disable_watermark_checkbox", False),
-            loaded.get("num_generations_input", 1),
-            loaded.get("num_candidates_slider", 3),
-            loaded.get("max_attempts_slider", 3),
-            loaded.get("bypass_whisper_checkbox", False),
-            loaded.get("whisper_model_dropdown", "medium (~5–8 GB OpenAI / ~2.5–4.5 GB faster-whisper)"),
-            loaded.get("use_faster_whisper_checkbox", True),
-            loaded.get("enable_parallel_checkbox", True),
-            loaded.get("use_longest_transcript_on_fail_checkbox", True),
-            loaded.get("num_parallel_workers_slider", 4),
-            loaded.get("exaggeration_slider", 0.5),
-            loaded.get("cfg_weight_slider", 1.0),
-            loaded.get("temp_slider", 0.75),
-            loaded.get("seed_input", 0),
-            loaded.get("enable_batching_checkbox", False),
-            loaded.get("smart_batch_short_sentences_checkbox", True),
-            loaded.get("to_lowercase_checkbox", True),
-            loaded.get("normalize_spacing_checkbox", True),
-            loaded.get("fix_dot_letters_checkbox", True),
-            loaded.get("remove_reference_numbers_checkbox", True),
-            loaded.get("use_auto_editor_checkbox", False),
-            loaded.get("keep_original_checkbox", False),
-            loaded.get("threshold_slider", 0.06),
-            loaded.get("margin_slider", 0.2),
-            loaded.get("normalize_audio_checkbox", False),
-            loaded.get("normalize_method_dropdown", "ebu"),
-            loaded.get("normalize_level_slider", -24),
-            loaded.get("normalize_tp_slider", -2),
-            loaded.get("normalize_lra_slider", 7),
-            loaded.get("sound_words_field", ""),
+            loaded.get("text_input", ""),                              # 0
+            None,                                                      # 1 text_file_input (cannot load)
+            _bool(loaded.get("separate_files_checkbox", False), False),# 2
+            loaded.get("audio_prompt_path_input", ""),                 # 3 ref_audio_input (filepath string)
+            loaded.get("export_format_checkboxes", ["wav"]),           # 4
+            _bool(loaded.get("disable_watermark_checkbox", False), False), # 5
+            _int(loaded.get("num_generations_input", 1), 1),           # 6
+            _int(loaded.get("num_candidates_slider", 3), 3),           # 7
+            _int(loaded.get("max_attempts_slider", 3), 3),             # 8
+            _bool(loaded.get("bypass_whisper_checkbox", False), False),# 9
+            wm,                                                        # 10 whisper_model_dropdown (label)
+            _bool(loaded.get("use_faster_whisper_checkbox", True), True), # 11
+            _bool(loaded.get("enable_parallel_checkbox", True), True), # 12
+            _bool(loaded.get("use_longest_transcript_on_fail_checkbox", True), True), # 13
+            _int(loaded.get("num_parallel_workers_slider", 4), 4),     # 14
+            _float(loaded.get("exaggeration_slider", 0.5), 0.5),       # 15
+            _float(loaded.get("cfg_weight_slider", 1.0), 1.0),         # 16
+            _float(loaded.get("temp_slider", 0.75), 0.75),             # 17
+            _int(loaded.get("seed_input", 0), 0),                      # 18
+            _bool(loaded.get("enable_batching_checkbox", False), False), # 19
+            _bool(loaded.get("smart_batch_short_sentences_checkbox", True), True), # 20
+            _bool(loaded.get("to_lowercase_checkbox", True), True),    # 21
+            _bool(loaded.get("normalize_spacing_checkbox", True), True),# 22
+            _bool(loaded.get("fix_dot_letters_checkbox", True), True), # 23
+            _bool(loaded.get("remove_reference_numbers_checkbox", True), True), # 24
+            _bool(loaded.get("use_pyrnnoise_checkbox", False), False), # 25  ✅ position fixed
+            _bool(loaded.get("use_auto_editor_checkbox", False), False),# 26
+            _bool(loaded.get("keep_original_checkbox", False), False), # 27
+            _float(loaded.get("threshold_slider", 0.06), 0.06),        # 28
+            _float(loaded.get("margin_slider", 0.2), 0.2),             # 29
+            _bool(loaded.get("normalize_audio_checkbox", False), False),# 30
+            nm,                                                        # 31 normalize_method_dropdown  ✅
+            _float(loaded.get("normalize_level_slider", -24), -24),    # 32
+            _float(loaded.get("normalize_tp_slider", -2), -2),         # 33
+            _float(loaded.get("normalize_lra_slider", 7), 7),          # 34
+            loaded.get("sound_words_field", ""),                       # 35
         ]
     except Exception as e:
         print(f"[ERROR] Failed to load settings JSON: {e}")
-        return [gr.update() for _ in range(35)]
+        return [gr.update() for _ in range(36)]
 
 
 
@@ -1313,6 +1590,11 @@ def main():
                             value=settings.get("remove_reference_numbers_checkbox", True)
                         )
                         
+                        use_pyrnnoise_checkbox = gr.Checkbox(
+                            label="Denoise with RNNoise (pyrnnoise) before Auto-Editor",
+                            value=settings["use_pyrnnoise_checkbox"]
+                        )
+
                         use_auto_editor_checkbox = gr.Checkbox(label="Post-process with Auto-Editor", value=settings["use_auto_editor_checkbox"])
                         keep_original_checkbox = gr.Checkbox(label="Keep original WAV (before Auto-Editor)", value=settings["keep_original_checkbox"])
                         threshold_slider = gr.Slider(0.01, 0.5, value=settings["threshold_slider"], step=0.01, label="Auto-Editor Volume Threshold")
@@ -1369,16 +1651,17 @@ def main():
                                 normalize_spacing_checkbox,          # 22
                                 fix_dot_letters_checkbox,            # 23
                                 remove_reference_numbers_checkbox,   # 24
-                                use_auto_editor_checkbox,            # 25
-                                keep_original_checkbox,              # 26
-                                threshold_slider,                    # 27
-                                margin_slider,                       # 28
-                                normalize_audio_checkbox,            # 29
-                                normalize_method_dropdown,           # 30
-                                normalize_level_slider,              # 31
-                                normalize_tp_slider,                 # 32
-                                normalize_lra_slider,                # 33
-                                sound_words_field,                   # 34
+                                use_pyrnnoise_checkbox,              # 25  <-- added
+                                use_auto_editor_checkbox,            # 26
+                                keep_original_checkbox,              # 27
+                                threshold_slider,                    # 28
+                                margin_slider,                       # 29
+                                normalize_audio_checkbox,            # 30
+                                normalize_method_dropdown,           # 31
+                                normalize_level_slider,              # 32
+                                normalize_tp_slider,                 # 33
+                                normalize_lra_slider,                # 34
+                                sound_words_field,                   # 35
                             ]
                         )
 
@@ -1397,6 +1680,7 @@ def main():
                     "temp_slider",
                     "seed_input",
                     "cfg_weight_slider",
+                    "use_pyrnnoise_checkbox",
                     "use_auto_editor_checkbox",
                     "threshold_slider",
                     "margin_slider",
@@ -1447,34 +1731,35 @@ def main():
                     temp_slider,                  # 4
                     seed_input,                   # 5
                     cfg_weight_slider,            # 6
-                    use_auto_editor_checkbox,     # 7
-                    threshold_slider,             # 8
-                    margin_slider,                # 9
-                    export_format_checkboxes,     #10
-                    enable_batching_checkbox,     #11
-                    to_lowercase_checkbox,        #12
-                    normalize_spacing_checkbox,   #13
-                    fix_dot_letters_checkbox,     #14
-                    remove_reference_numbers_checkbox,   #15
-                    keep_original_checkbox,       #16
-                    smart_batch_short_sentences_checkbox,#17
-                    disable_watermark_checkbox,   #18
-                    num_generations_input,        #19
-                    normalize_audio_checkbox,     #20
-                    normalize_method_dropdown,    #21
-                    normalize_level_slider,       #22
-                    normalize_tp_slider,          #23
-                    normalize_lra_slider,         #24
-                    num_candidates_slider,        #25
-                    max_attempts_slider,          #26
-                    bypass_whisper_checkbox,      #27
-                    whisper_model_dropdown,       #28
-                    enable_parallel_checkbox,     #29
-                    num_parallel_workers_slider,  #30
-                    use_longest_transcript_on_fail_checkbox, #31
-                    sound_words_field,            #32
-                    use_faster_whisper_checkbox,  #33
-                    separate_files_checkbox       #34
+                    use_pyrnnoise_checkbox,       # 7  (NEW)
+                    use_auto_editor_checkbox,     # 8
+                    threshold_slider,             # 9
+                    margin_slider,                #10
+                    export_format_checkboxes,     #11
+                    enable_batching_checkbox,     #12
+                    to_lowercase_checkbox,        #13
+                    normalize_spacing_checkbox,   #14
+                    fix_dot_letters_checkbox,     #15
+                    remove_reference_numbers_checkbox,   #16
+                    keep_original_checkbox,       #17
+                    smart_batch_short_sentences_checkbox,#18
+                    disable_watermark_checkbox,   #19
+                    num_generations_input,        #20
+                    normalize_audio_checkbox,     #21
+                    normalize_method_dropdown,    #22
+                    normalize_level_slider,       #23
+                    normalize_tp_slider,          #24
+                    normalize_lra_slider,         #25
+                    num_candidates_slider,        #26
+                    max_attempts_slider,          #27
+                    bypass_whisper_checkbox,      #28
+                    whisper_model_dropdown,       #29
+                    enable_parallel_checkbox,     #30
+                    num_parallel_workers_slider,  #31
+                    use_longest_transcript_on_fail_checkbox, #32
+                    sound_words_field,            #33
+                    use_faster_whisper_checkbox,  #34
+                    separate_files_checkbox       #35
                 ],
                 outputs=[output_audio, audio_dropdown, audio_preview],
             )
