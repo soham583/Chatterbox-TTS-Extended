@@ -8,6 +8,9 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 - **Whisper/faster-whisper validation**
 - **Voice conversion (VC) tab**
 - **Full-featured persistent UI with parallelism and artifact reduction**
+- **Optional audio denoising with pyrnnoise - removes most artifacts**
+- **Subtitle export (.srt / .vtt)**
+- **Chapter-prefixed output naming for book narration**
 
 ---
 
@@ -46,8 +49,11 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 | Dot-letter ("J.R.R.") correction          | ✔             | Yes          |
 | Lowercase & whitespace normalization      | ✔             | Yes          |
 | Auto-Editor post-processing               | ✔             | Yes          |
+| **pyrnnoise denoising**                   | ✔             | Yes          |
 | FFmpeg normalization (EBU/peak)           | ✔             | Yes          |
 | WAV/MP3/FLAC export                       | ✔             | Yes          |
+| **Subtitle export (.srt / .vtt)**         | ✔             | Yes          |
+| **Chapter-prefixed output naming**        | ✔             | Yes          |
 | Candidates per chunk, retries, fallback   | ✔             | Yes          |
 | Parallelism (workers)                     | ✔             | Yes          |
 | Whisper/faster-whisper backend            | ✔             | Yes          |
@@ -110,6 +116,11 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 
 ## Audio Post-Processing
 
+- **pyrnnoise Denoising:**
+  - Removes almost all artifacts.
+  - Useful for improving clarity in generated or converted speech.
+  - Exposed in the UI as an optional toggle.
+  - See also: [Tips & Troubleshooting](#tips--troubleshooting) for usage guidance.
 - **Auto-Editor integration:**
   - Trims silences/stutters/artifacts after generation.
   - **Threshold** and **margin** are adjustable in UI.
@@ -124,6 +135,8 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 ## Export & Output Options
 
 - **Multiple audio formats:** WAV (uncompressed), MP3 (320k), FLAC (lossless). Any/all selectable in UI.
+- **Subtitle export:** Automatically generate `.srt` and `.vtt` subtitle files for every narration.
+- **Chapter-prefixed output:** In book narration workflows, output filenames are automatically prefixed with chapter names for organization.
 - **Output file naming:** Each output includes base name, timestamp, generation, and seed for tracking.
 - **Batch export:** If “separate files” is checked, each text file gets its own processed output.
 
@@ -169,12 +182,12 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 
 ## 🎙️ Voice Conversion (VC) Tab
 
-Convert any voice to sound like another!\
+Convert any voice to sound like another!  
 **The Voice Conversion tab lets you:**
 
 - Upload or record the **input audio** (the voice to convert).
 - Upload or record the **target/reference voice** (the voice to match).
-- Click **Run Voice Conversion** — get a new audio file with the same words but the target voice!
+- Click **Run Voice Conversion** — get a new audio file with the same words but the target voice!
 
 **Technical highlights:**
 
@@ -195,6 +208,9 @@ Convert any voice to sound like another!\
   - Increase candidates/retries
   - Adjust auto-editor threshold/margin
   - Refine sound word replacements
+- **Background noise in output?**
+  - Enable **pyrnnoise denoising** in the UI to clean up artifacts.
+  - Run denoising before normalization for best results.
 - **Choppy audio?**
   - Increase auto-editor margin
   - Lower threshold
@@ -205,8 +221,7 @@ Convert any voice to sound like another!\
 
 ## 📝 Installation
 
-Requires Python 3.10.x and [FFMPEG](https://ffmpeg.org/download.html).
-
+Requires Python 3.10.x and [FFMPEG](https://ffmpeg.org/download.html).  
 Clone the repo:
 
 ```bash
@@ -233,4 +248,3 @@ If FFMPEG isn’t in your PATH, put the executable in the same directory as your
 ## 📣 Feedback & Contributions
 
 Open an issue or pull request for suggestions, bug reports, or improvements!
-
