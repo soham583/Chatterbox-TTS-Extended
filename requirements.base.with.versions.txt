@@ -16,6 +16,7 @@ resemble-perth==1.0.1
 silero-vad==5.1.2
 conformer==0.3.2
 soundfile==0.13.1
+pyrnnoise==0.3.8
 --extra-index-url=https://download.pytorch.org/whl/cu128
 torch==2.7.0
 torchaudio==2.7.0
