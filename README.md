@@ -6,7 +6,7 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 - **Custom candidate generation & validation**
 - **Rich audio post-processing**
 - **Whisper/faster-whisper validation**
-- **Voice conversion (VC) tab)**
+- **Voice conversion (VC) tab**
 - **Full-featured persistent UI with parallelism and artifact reduction**
 - **Optional audio denoising with pyrnnoise - removes most artifacts**
 
@@ -248,4 +248,5 @@ Open an issue or pull request for suggestions, bug reports, or improvements!
 It seems if you use fasterwhisper for validation, sometimes it just silently crashes. Apparently this has to do with using the fasterwhisper model. It's not actually the python code. So if you are experiencing this, switch back to the original WhisperSync model.
 
 ---
+
 
