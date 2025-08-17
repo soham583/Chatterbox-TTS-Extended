@@ -261,13 +261,52 @@ if DEVICE == "cuda":
 
 MODEL = None
 
+def _free_vram():
+    """
+    Best-effort VRAM/RAM cleanup before (re)initializing heavy models.
+    Safe to call on CPU-only systems.
+    """
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        gc.collect()
+    except Exception:
+        pass
+
+
 def load_whisper_backend(model_name, use_faster_whisper, device):
+    """
+    Load Whisper with VRAM-friendly fallbacks:
+      CUDA: try float16 -> int8_float16 -> int8
+      non-CUDA: try int8 -> float32
+    """
     if use_faster_whisper:
-        print(f"[DEBUG] Loading faster-whisper model: {model_name}")
-        return FasterWhisperModel(model_name, device=device, compute_type="float16" if device=="cuda" else "float32")
+        _free_vram()  # free memory before constructing Faster-Whisper
+        if device == "cuda":
+            candidates = ["float16", "int8_float16", "int8"]
+        else:
+            candidates = ["int8", "float32"]
+
+        last_err = None
+        for ct in candidates:
+            try:
+                print(f"[DEBUG] Loading faster-whisper model: {model_name} (device={device}, compute_type={ct})")
+                return FasterWhisperModel(model_name, device=device, compute_type=ct)
+            except Exception as e:
+                last_err = e
+                print(f"[WARN] Failed loading faster-whisper ({ct}): {e}")
+
+        raise RuntimeError(
+            f"Failed to load Faster-Whisper '{model_name}' on device={device}. "
+            f"Tried compute_types={candidates}. Last error: {last_err}"
+        )
     else:
         print(f"[DEBUG] Loading openai-whisper model: {model_name}")
+        _free_vram()  # also free before OpenAI-whisper to reduce fragmentation
         return whisper.load_model(model_name, device=device)
+
 
 def get_or_load_model():
     global MODEL
@@ -1139,9 +1178,13 @@ def process_text_for_tts(
         # -------- WHISPER VALIDATION --------
         if not bypass_whisper_checking:
             print(f"\033[32m[DEBUG] Validating all candidates with Whisper for all chunks (sequentially)...\033[0m")
+
+            # Purge as much memory as possible before initializing Whisper
+            _free_vram()
+
             model_key = whisper_model_map.get(whisper_model_name, "medium")
             whisper_model = load_whisper_backend(model_key, use_faster_whisper, DEVICE)
-            # Load model once
+
             try:
                 all_candidates = []
                 for chunk_idx, candidates in chunk_candidate_map.items():
