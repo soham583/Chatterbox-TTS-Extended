@@ -960,7 +960,7 @@ def generate_batch_tts(
                 try:
                     fname = os.path.basename(fobj.name)
                     base = os.path.splitext(fname)[0]
-                    base = re.sub(r'[^a-zA-Z0-9_\-]', '_', base)
+                    base = re.sub(r'[^a-zA-Z0-9_\-]', '_', base + "_")
                     with open(fobj.name, "r", encoding="utf-8") as f:
                         file_text = f.read()
                     all_jobs.append((file_text, base))
