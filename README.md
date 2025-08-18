@@ -245,7 +245,8 @@ Open an issue or pull request for suggestions, bug reports, or improvements!
 
 ## Known Bugs:
 
-It seems if you use fasterwhisper for validation, sometimes it just silently crashes. Apparently this has to do with using the fasterwhisper model. It's not actually the python code. So if you are experiencing this, switch back to the original WhisperSync model.
+It seems if you use fasterwhisper for validation, sometimes it just silently crashes. Apparently this has to do with using the fasterwhisper model. It's not actually the python code. So if you are experiencing this, switch back to the original WhisperSync model. 
+UPDATE: with the latest update this bug may have been resolved.
 
 ---
 
