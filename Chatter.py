@@ -76,7 +76,7 @@ def save_settings(mapping):
 
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
         json.dump(mapping, f, indent=2, ensure_ascii=False)
-        
+
 def save_settings_csv(settings_dict, output_audio_files, csv_path):
     """
     Save a dict of settings and a list of output audio files to a one-row CSV.
@@ -100,8 +100,8 @@ def save_settings_json(settings_dict, json_path):
     """
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(settings_dict, f, indent=2, ensure_ascii=False)
-        
-        
+
+
 # === VC TAB (NEW) ===
 
 VC_MODEL = None  # Reuse the global DEVICE defined earlier
@@ -222,7 +222,7 @@ In the Land of Mordor where the Shadows lie.""",
         "sound_words_field": "",
         "use_pyrnnoise_checkbox": False,
     }
-        
+
 settings = load_settings()        
 # Download both punkt and punkt_tab if missing
 try:
@@ -357,7 +357,7 @@ def replace_letter_period_sequences(text: str) -> str:
         letters = cleaned.split('.')
         return ' '.join(letters)
     return re.sub(r'\b(?:[A-Za-z]\.){2,}', replacer, text)
-    
+
 def remove_inline_reference_numbers(text):
     # Remove reference numbers after sentence-ending punctuation, but keep the punctuation
     pattern = r'([.!?,\"\'”’)\]])(\d+)(?=\s|$)'
@@ -712,8 +712,8 @@ def whisper_check_mp(candidate_path, target_text, whisper_model, use_faster_whis
     except Exception as e:
         print(f"[ERROR] Whisper transcription failed for {candidate_path}: {e}")
         return (candidate_path, 0.0, f"ERROR: {e}")
-        
-        
+
+
 def process_one_chunk(
     model, sentence_group, idx, gen_index, this_seed,
     audio_prompt_path_input, exaggeration_input, temperature_input, cfgw_input,
@@ -746,7 +746,7 @@ def process_one_chunk(
                         cfg_weight=cfgw_input,
                         apply_watermark=not disable_watermark
                     )
-                    
+
 
                     candidate_path = f"temp/gen{gen_index+1}_chunk_{idx:03d}_cand_{cand_idx+1}_try{retry_attempt_number}_seed{candidate_seed}.wav"
                     torchaudio.save(candidate_path, wav, model.sr)
@@ -889,7 +889,7 @@ def generate_and_preview(*args):
     audio_files = [p for p in output_paths if os.path.splitext(p)[1].lower() in [".wav", ".mp3", ".flac"]]
     dropdown_value = audio_files[0] if audio_files else None
     return output_paths, gr.update(choices=audio_files, value=dropdown_value), dropdown_value
-    
+
 
 def update_audio_preview(selected_path):
     return selected_path
@@ -960,6 +960,7 @@ def generate_batch_tts(
                 try:
                     fname = os.path.basename(fobj.name)
                     base = os.path.splitext(fname)[0]
+                    base = re.sub(r'[^a-zA-Z0-9_\-]', '_', base)
                     base = re.sub(r'[^a-zA-Z0-9_\-]', '_', base + "_")
                     with open(fobj.name, "r", encoding="utf-8") as f:
                         file_text = f.read()
@@ -1067,13 +1068,13 @@ def process_text_for_tts(
     use_faster_whisper=False,
 ):
 
-    
+
 
     model = get_or_load_model()
     whisper_model = None
     if not text or len(text.strip()) == 0:
         raise ValueError("No text provided.")
-    
+
     # ---- NEW: Apply sound word removals/replacements ----
     if sound_words_field and sound_words_field.strip():
         sound_words = parse_sound_word_field(sound_words_field)
@@ -1346,7 +1347,7 @@ def process_text_for_tts(
                     print(f"[ERROR] RNNoise failed: {e}")
             else:
                 print("[WARNING] pyrnnoise not installed; skipping denoise.")
-                
+
         if use_auto_editor:
             try:
                 cleaned_output = wav_output.replace(".wav", "_cleaned.wav")
@@ -1409,7 +1410,7 @@ def process_text_for_tts(
                 os.remove(wav_output)
             except Exception as e:
                 print(f"[ERROR] Could not remove temp wav file: {e}")
-                
+
             # === Save settings CSV and JSON for this generation ===
         # Only include relevant fields and NOT the raw text_input
         settings_to_save = {
@@ -1578,7 +1579,7 @@ def apply_settings_json(settings_json):
 
 
 
-def main(server_name=None, server_port=None, share=True):
+def main(server_name=None, server_port=None, share=False):
     with gr.Blocks() as demo:
         gr.Markdown("# 🎧 Chatterbox TTS Extended")
         with gr.Tabs():
@@ -1633,7 +1634,7 @@ def main(server_name=None, server_port=None, share=True):
                             label="Remove inline reference numbers after sentences (e.g., '.188', '.”3')",
                             value=settings.get("remove_reference_numbers_checkbox", True)
                         )
-                        
+
                         use_pyrnnoise_checkbox = gr.Checkbox(
                             label="Denoise with RNNoise (pyrnnoise) before Auto-Editor",
                             value=settings["use_pyrnnoise_checkbox"]
@@ -1709,8 +1710,8 @@ def main(server_name=None, server_port=None, share=True):
                             ]
                         )
 
-                        
-                        
+
+
 
                         output_audio = gr.Files(label="Download Final Audio File(s)")
                         audio_dropdown = gr.Dropdown(label="Click to Preview Any Generated File")
@@ -1759,8 +1760,8 @@ def main(server_name=None, server_port=None, share=True):
                 mapping = dict(zip(keys, vals))
                 save_settings(mapping)
                 return
-             
-            
+
+
 
             run_button.click(
                 fn=lambda *args: (
@@ -2085,4 +2086,3 @@ if __name__ == "__main__":
         args.host = "0.0.0.0"
 
     main(server_name=args.host, server_port=args.port, share=args.share)
-
