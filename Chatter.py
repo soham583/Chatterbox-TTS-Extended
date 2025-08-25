@@ -1578,7 +1578,7 @@ def apply_settings_json(settings_json):
 
 
 
-def main(server_name=None, server_port=None, share=False):
+def main(server_name=None, server_port=None, share=True):
     with gr.Blocks() as demo:
         gr.Markdown("# 🎧 Chatterbox TTS Extended")
         with gr.Tabs():
@@ -2085,3 +2085,4 @@ if __name__ == "__main__":
         args.host = "0.0.0.0"
 
     main(server_name=args.host, server_port=args.port, share=args.share)
+
